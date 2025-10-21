@@ -26,9 +26,129 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.GestureDetectorCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.MediaStore
+import android.widget.ImageView
+import androidx.activity.result.contract.ActivityResultContracts
 
 class MainActivity : AppCompatActivity() {
+     // 权限请求码
+    private val REQUEST_CAMERA_PERMISSION = 100
+    private val REQUEST_STORAGE_PERMISSION = 101
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 检查并请求相机权限
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.CAMERA),
+                REQUEST_CAMERA_PERMISSION
+            )
+        }
+
+        // 检查并请求存储权限（根据系统版本适配）
+        val storagePermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        if (ContextCompat.checkSelfPermission(this, storagePermission) 
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(storagePermission),
+                REQUEST_STORAGE_PERMISSION
+            )
+        }
+    }
+
+     private lateinit var imageView: ImageView  // 用于显示图片的控件
+
+    // 注册相机结果回调
+    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val imageBitmap = result.data?.extras?.get("data") as Bitmap
+            imageView.setImageBitmap(imageBitmap)  // 显示相机拍摄的图片
+        }
+    }
+
+    // 注册相册结果回调
+    private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val imageUri: Uri? = result.data?.data
+            imageView.setImageURI(imageUri)  // 显示相册选择的图片
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)  // 假设布局文件为activity_main.xml
+        imageView = findViewById(R.id.image_view)  // 绑定布局中的ImageView
+
+        // 绑定相机按钮点击事件（假设布局中有id为btn_camera的按钮）
+        findViewById<ImageView>(R.id.btn_camera).setOnClickListener {
+            // 检查相机权限后启动相机
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                val takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                takePictureLauncher.launch(takePictureIntent)
+            }
+        }
+
+        // 绑定相册按钮点击事件（假设布局中有id为btn_gallery的按钮）
+        findViewById<ImageView>(R.id.btn_gallery).setOnClickListener {
+            // 检查存储权限后启动相册
+            val storagePermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            if (ContextCompat.checkSelfPermission(this, storagePermission) 
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                val pickImageIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                pickImageLauncher.launch(pickImageIntent)
+            }
+        }
+    }
+    
+    // 处理权限请求结果
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQUEST_CAMERA_PERMISSION -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // 相机权限已授予，可执行相机操作
+                } else {
+                    // 权限被拒绝，提示用户
+                }
+            }
+            REQUEST_STORAGE_PERMISSION -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // 存储权限已授予，可执行相册操作
+                } else {
+                    // 权限被拒绝，提示用户
+                }
+            }
+        }
+    }
 //    private lateinit var appBarConfiguration: AppBarConfiguration
 //    private lateinit var binding: ActivityMainBinding
 
