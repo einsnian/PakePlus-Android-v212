@@ -40,6 +40,21 @@ import android.widget.ImageView
 import androidx.activity.result.contract.ActivityResultContracts
 
 class MainActivity : AppCompatActivity() {
+     private lateinit var webView: WebView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        webView = findViewById(R.id.web_view) // 假设布局中有id为web_view的WebView
+
+        // 配置WebView支持JS和文件访问
+        val webSettings: WebSettings = webView.settings
+        webSettings.javaScriptEnabled = true // 必须启用JS，否则网页上传按钮可能无法触发
+        webSettings.allowFileAccess = true // 允许访问文件
+        webSettings.allowContentAccess = true // 允许通过内容提供者访问文件
+    }
+    
      // 权限请求码
     private val REQUEST_CAMERA_PERMISSION = 100
     private val REQUEST_STORAGE_PERMISSION = 101
