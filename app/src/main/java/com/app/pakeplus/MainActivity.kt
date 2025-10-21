@@ -1,6 +1,7 @@
 package com.app.pakeplus
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,11 +11,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.webkit.*
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,13 +30,17 @@ class MainActivity : AppCompatActivity() {
     // 权限请求码
     private val REQUEST_CAMERA_PERMISSION = 100
     private val REQUEST_STORAGE_PERMISSION = 101
+    // 文件选择请求码
+    private val REQUEST_FILE_PICKER = 1001
+
+    // 用于保存网页文件选择回调（关键：连接WebView与原生文件选择）
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
     // 注册相机和相册结果回调
     private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val imageBitmap = result.data?.extras?.get("data") as? Bitmap
             imageBitmap?.let {
-                // 可将图片传递给WebView（示例：转为Base64）
                 val base64Image = bitmapToBase64(it)
                 webView.evaluateJavascript("window.onCameraImage('$base64Image')", null)
                 Toast.makeText(this, "相机拍摄成功", Toast.LENGTH_SHORT).show()
@@ -51,7 +52,6 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK && result.data != null) {
             val imageUri: Uri? = result.data?.data
             imageUri?.let {
-                // 可将图片Uri传递给WebView
                 val uriString = it.toString()
                 webView.evaluateJavascript("window.onGalleryImage('$uriString')", null)
                 Toast.makeText(this, "相册选择成功", Toast.LENGTH_SHORT).show()
@@ -83,7 +83,6 @@ class MainActivity : AppCompatActivity() {
 
         // 加载网页
         webView.loadUrl("https://juejin.cn/")
-        // 本地测试可使用：webView.loadUrl("file:///android_asset/index.html")
     }
 
     // 初始化WebView设置
@@ -91,15 +90,21 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true       // 启用JS（与前端交互必要）
             domStorageEnabled = true       // 启用DOM存储
-            allowFileAccess = true         // 允许文件访问
+            allowFileAccess = true         // 允许文件访问（关键：支持文件选择）
+            allowContentAccess = true      // 允许内容访问
             setSupportMultipleWindows(true)
             loadWithOverviewMode = true
             setSupportZoom(false)
+            // 允许文件选择（API 16+）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                allowFileAccessFromFileURLs = true
+                allowUniversalAccessFromFileURLs = true
+            }
         }
 
         webView.clearCache(true)
         webView.webViewClient = MyWebViewClient()
-        webView.webChromeClient = MyChromeClient()
+        webView.webChromeClient = MyChromeClient()  // 使用自定义ChromeClient处理文件选择
 
         // 注入JS接口，供前端调用原生功能
         webView.addJavascriptInterface(WebAppInterface(), "NativeInterface")
@@ -193,6 +198,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 处理文件选择结果（关键：将选择的文件返回给网页）
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_FILE_PICKER) {
+            if (filePathCallback == null) return
+
+            // 处理选择的文件（支持单文件和多文件）
+            val results = if (data == null || resultCode != Activity.RESULT_OK) {
+                null  // 未选择文件
+            } else {
+                // 解析选择的文件Uri
+                WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+            }
+
+            // 将结果返回给网页
+            filePathCallback?.onReceiveValue(results)
+            filePathCallback = null  // 重置回调
+        }
+    }
+
     // 处理返回键
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
@@ -237,18 +262,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // WebChrome客户端（处理进度和弹窗）
+    // WebChrome客户端（关键：处理网页文件选择请求）
     inner class MyChromeClient : WebChromeClient() {
         override fun onProgressChanged(view: WebView?, newProgress: Int) {
             super.onProgressChanged(view, newProgress)
             println("网页加载进度: $newProgress%，URL: ${view?.url}")
+        }
+
+        // 处理网页中的文件选择（如<input type="file">）
+        override fun onShowFileChooser(
+            webView: WebView?,
+            filePathCallback: ValueCallback<Array<Uri>>?,
+            fileChooserParams: FileChooserParams?
+        ): Boolean {
+            // 保存回调，用于选择文件后返回结果
+            this@MainActivity.filePathCallback = filePathCallback
+
+            // 检查存储权限（文件选择依赖存储权限）
+            val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            if (ContextCompat.checkSelfPermission(this@MainActivity, storagePermission) 
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this@MainActivity,
+                    arrayOf(storagePermission),
+                    REQUEST_STORAGE_PERMISSION
+                )
+                return false  // 权限不足时终止流程
+            }
+
+            // 构建文件选择意图（支持相机和相册）
+            val intent = fileChooserParams?.createIntent()
+            return try {
+                // 启动系统文件选择器
+                startActivityForResult(intent, REQUEST_FILE_PICKER)
+                true  // 表示已处理请求
+            } catch (e: ActivityNotFoundException) {
+                // 无应用可处理文件选择时，返回null给网页
+                filePathCallback?.onReceiveValue(null)
+                false
+            }
         }
     }
 
     // JS与原生交互接口
     inner class WebAppInterface {
         // 供JS调用：打开相机
-        @android.webkit.JavascriptInterface
+        @JavascriptInterface
         fun openCamera() {
             runOnUiThread {
                 if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) 
@@ -267,7 +331,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 供JS调用：打开相册
-        @android.webkit.JavascriptInterface
+        @JavascriptInterface
         fun openGallery() {
             runOnUiThread {
                 val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
