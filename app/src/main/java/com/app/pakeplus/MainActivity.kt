@@ -1,8 +1,13 @@
 package com.app.pakeplus
 
-import android.annotation.SuppressLint
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.webkit.WebChromeClient
@@ -10,58 +15,136 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
-// import android.view.Menu
-// import android.view.WindowInsets
-// import com.google.android.material.snackbar.Snackbar
-// import com.google.android.material.navigation.NavigationView
-// import androidx.navigation.findNavController
-// import androidx.navigation.ui.AppBarConfiguration
-// import androidx.navigation.ui.navigateUp
-// import androidx.navigation.ui.setupActionBarWithNavController
-// import androidx.navigation.ui.setupWithNavController
-// import androidx.drawerlayout.widget.DrawerLayout
-// import com.app.pakeplus.databinding.ActivityMainBinding
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.GestureDetectorCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import android.content.Intent
-import android.graphics.Bitmap
-import android.net.Uri
-import android.provider.MediaStore
-import android.widget.ImageView
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.GestureDetectorCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : AppCompatActivity() {
-     private lateinit var webView: WebView
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+    private lateinit var webView: WebView
+    private lateinit var gestureDetector: GestureDetectorCompat
 
-        webView = findViewById(R.id.web_view) // 假设布局中有id为web_view的WebView
-
-        // 配置WebView支持JS和文件访问
-        val webSettings: WebSettings = webView.settings
-        webSettings.javaScriptEnabled = true // 必须启用JS，否则网页上传按钮可能无法触发
-        webSettings.allowFileAccess = true // 允许访问文件
-        webSettings.allowContentAccess = true // 允许通过内容提供者访问文件
-    }
-    
-     // 权限请求码
+    // 权限请求码
     private val REQUEST_CAMERA_PERMISSION = 100
     private val REQUEST_STORAGE_PERMISSION = 101
 
+    // 注册相机和相册结果回调
+    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val imageBitmap = result.data?.extras?.get("data") as? Bitmap
+            imageBitmap?.let {
+                // 可将图片传递给WebView（示例：转为Base64）
+                val base64Image = bitmapToBase64(it)
+                webView.evaluateJavascript("window.onCameraImage('$base64Image')", null)
+                Toast.makeText(this, "相机拍摄成功", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val imageUri: Uri? = result.data?.data
+            imageUri?.let {
+                // 可将图片Uri传递给WebView
+                val uriString = it.toString()
+                webView.evaluateJavascript("window.onGalleryImage('$uriString')", null)
+                Toast.makeText(this, "相册选择成功", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 检查并请求相机权限
+        enableEdgeToEdge()
+        setContentView(R.layout.single_main)
+
+        // 处理系统栏Insets
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.ConstraintLayout)) { view, insets ->
+            val systemBar = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(systemBar.left, systemBar.top, systemBar.right, systemBar.bottom)
+            insets
+        }
+
+        // 初始化WebView
+        webView = findViewById(R.id.webview)
+        initWebViewSettings()
+
+        // 初始化手势检测器
+        initGestureDetector()
+
+        // 检查并请求必要权限
+        checkAndRequestPermissions()
+
+        // 加载网页
+        webView.loadUrl("https://juejin.cn/")
+        // 本地测试可使用：webView.loadUrl("file:///android_asset/index.html")
+    }
+
+    // 初始化WebView设置
+    private fun initWebViewSettings() {
+        webView.settings.apply {
+            javaScriptEnabled = true       // 启用JS（与前端交互必要）
+            domStorageEnabled = true       // 启用DOM存储
+            allowFileAccess = true         // 允许文件访问
+            setSupportMultipleWindows(true)
+            loadWithOverviewMode = true
+            setSupportZoom(false)
+        }
+
+        webView.clearCache(true)
+        webView.webViewClient = MyWebViewClient()
+        webView.webChromeClient = MyChromeClient()
+
+        // 注入JS接口，供前端调用原生功能
+        webView.addJavascriptInterface(WebAppInterface(), "NativeInterface")
+    }
+
+    // 初始化手势检测器（左右滑动控制网页前进后退）
+    private fun initGestureDetector() {
+        gestureDetector = GestureDetectorCompat(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                velocityX: Float,
+                velocityY: Float
+            ): Boolean {
+                if (e1 == null) return false
+
+                val diffX = e2.x - e1.x
+                val diffY = e2.y - e1.y
+
+                // 处理水平滑动
+                if (Math.abs(diffX) > Math.abs(diffY) && 
+                    Math.abs(diffX) > 100 && 
+                    Math.abs(velocityX) > 100
+                ) {
+                    if (diffX > 0 && webView.canGoBack()) {
+                        webView.goBack()
+                        return true
+                    } else if (diffX < 0 && webView.canGoForward()) {
+                        webView.goForward()
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+
+        webView.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            false
+        }
+    }
+
+    // 检查并请求权限
+    private fun checkAndRequestPermissions() {
+        // 相机权限
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -72,8 +155,8 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 检查并请求存储权限（根据系统版本适配）
-        val storagePermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        // 存储权限（根据Android版本适配）
+        val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Manifest.permission.READ_MEDIA_IMAGES
         } else {
             Manifest.permission.READ_EXTERNAL_STORAGE
@@ -89,57 +172,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-     private lateinit var imageView: ImageView  // 用于显示图片的控件
-
-    // 注册相机结果回调
-    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) {
-            val imageBitmap = result.data?.extras?.get("data") as Bitmap
-            imageView.setImageBitmap(imageBitmap)  // 显示相机拍摄的图片
-        }
-    }
-
-    // 注册相册结果回调
-    private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            val imageUri: Uri? = result.data?.data
-            imageView.setImageURI(imageUri)  // 显示相册选择的图片
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)  // 假设布局文件为activity_main.xml
-        imageView = findViewById(R.id.image_view)  // 绑定布局中的ImageView
-
-        // 绑定相机按钮点击事件（假设布局中有id为btn_camera的按钮）
-        findViewById<ImageView>(R.id.btn_camera).setOnClickListener {
-            // 检查相机权限后启动相机
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
-                == PackageManager.PERMISSION_GRANTED
-            ) {
-                val takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                takePictureLauncher.launch(takePictureIntent)
-            }
-        }
-
-        // 绑定相册按钮点击事件（假设布局中有id为btn_gallery的按钮）
-        findViewById<ImageView>(R.id.btn_gallery).setOnClickListener {
-            // 检查存储权限后启动相册
-            val storagePermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                Manifest.permission.READ_MEDIA_IMAGES
-            } else {
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            }
-            if (ContextCompat.checkSelfPermission(this, storagePermission) 
-                == PackageManager.PERMISSION_GRANTED
-            ) {
-                val pickImageIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-                pickImageLauncher.launch(pickImageIntent)
-            }
-        }
-    }
-    
     // 处理权限请求结果
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -149,136 +181,19 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         when (requestCode) {
             REQUEST_CAMERA_PERMISSION -> {
-                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    // 相机权限已授予，可执行相机操作
-                } else {
-                    // 权限被拒绝，提示用户
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_DENIED) {
+                    Toast.makeText(this, "相机权限被拒绝，无法使用相机功能", Toast.LENGTH_SHORT).show()
                 }
             }
             REQUEST_STORAGE_PERMISSION -> {
-                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    // 存储权限已授予，可执行相册操作
-                } else {
-                    // 权限被拒绝，提示用户
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_DENIED) {
+                    Toast.makeText(this, "存储权限被拒绝，无法访问相册", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
-//    private lateinit var appBarConfiguration: AppBarConfiguration
-//    private lateinit var binding: ActivityMainBinding
 
-    private lateinit var webView: WebView
-    private lateinit var gestureDetector: GestureDetectorCompat
-
-    @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        enableEdgeToEdge()
-        setContentView(R.layout.single_main)
-
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.ConstraintLayout))
-        { view, insets ->
-            val systemBar = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(systemBar.left, systemBar.top, systemBar.right, systemBar.bottom)
-            insets
-        }
-
-        webView = findViewById<WebView>(R.id.webview)
-
-        webView.settings.apply {
-            javaScriptEnabled = true       // 启用JS
-            domStorageEnabled = true       // 启用DOM存储（Vue 需要）
-            allowFileAccess = true         // 允许文件访问
-            setSupportMultipleWindows(true)
-        }
-
-        // webView.settings.userAgentString = ""
-
-        webView.settings.loadWithOverviewMode = true
-        webView.settings.setSupportZoom(false)
-
-        // clear cache
-        webView.clearCache(true)
-
-        // inject js
-        webView.webViewClient = MyWebViewClient()
-
-        // get web load progress
-        webView.webChromeClient = MyChromeClient()
-
-        // Setup gesture detector
-        gestureDetector =
-            GestureDetectorCompat(this, object : GestureDetector.SimpleOnGestureListener() {
-                override fun onFling(
-                    e1: MotionEvent?,
-                    e2: MotionEvent,
-                    velocityX: Float,
-                    velocityY: Float
-                ): Boolean {
-                    if (e1 == null) return false
-
-                    val diffX = e2.x - e1.x
-                    val diffY = e2.y - e1.y
-
-                    // Only handle horizontal swipes
-                    if (Math.abs(diffX) > Math.abs(diffY)) {
-                        if (Math.abs(diffX) > 100 && Math.abs(velocityX) > 100) {
-                            if (diffX > 0) {
-                                // Swipe right - go back
-                                if (webView.canGoBack()) {
-                                    webView.goBack()
-                                    return true
-                                }
-                            } else {
-                                // Swipe left - go forward
-                                if (webView.canGoForward()) {
-                                    webView.goForward()
-                                    return true
-                                }
-                            }
-                        }
-                    }
-                    return false
-                }
-            })
-
-        // Set touch listener for WebView
-        webView.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-            false
-        }
-
-        webView.loadUrl("https://juejin.cn/")
-        // webView.loadUrl("file:///android_asset/index.html")
-
-//        binding = ActivityMainBinding.inflate(layoutInflater)
-//        setContentView(R.layout.single_main)
-
-//        setSupportActionBar(binding.appBarMain.toolbar)
-
-//        binding.appBarMain.fab.setOnClickListener { view ->
-//            Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG)
-//                .setAction("Action", null)
-//                .setAnchorView(R.id.fab).show()
-//        }
-
-//        val drawerLayout: DrawerLayout = binding.drawerLayout
-//        val navView: NavigationView = binding.navView
-//        val navController = findNavController(R.id.nav_host_fragment_content_main)
-
-        // Passing each menu ID as a set of Ids because each
-        // menu should be considered as top level destinations.
-//        appBarConfiguration = AppBarConfiguration(
-//            setOf(
-//                R.id.nav_home, R.id.nav_gallery, R.id.nav_slideshow
-//            ), drawerLayout
-//        )
-//        setupActionBarWithNavController(navController, appBarConfiguration)
-//        navView.setupWithNavController(navController)
-    }
-
-
+    // 处理返回键
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (webView.canGoBack()) {
@@ -288,29 +203,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-//    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-//        // Inflate the menu; this adds items to the action bar if it is present.
-//        menuInflater.inflate(R.menu.main, menu)
-//        return true
-//    }
-
-//    override fun onSupportNavigateUp(): Boolean {
-//        val navController = findNavController(R.id.nav_host_fragment_content_main)
-//        return navController.navigateUp(appBarConfiguration) || super.onSupportNavigateUp()
-//    }
-
+    // WebView客户端
     inner class MyWebViewClient : WebViewClient() {
-
-        // vConsole debug
-        private var debug = false
+        private var debug = false  // 控制是否启用vConsole调试
 
         @Deprecated("Deprecated in Java", ReplaceWith("false"))
         override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-            return false
-        }
-
-        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-            super.doUpdateVisitedHistory(view, url, isReload)
+            return false  // 允许WebView加载所有链接
         }
 
         override fun onReceivedError(
@@ -319,7 +218,7 @@ class MainActivity : AppCompatActivity() {
             error: WebResourceError?
         ) {
             super.onReceivedError(view, request, error)
-            println("webView onReceivedError: ${error?.description}")
+            println("WebView错误: ${error?.description}")
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -328,23 +227,75 @@ class MainActivity : AppCompatActivity() {
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
+            // 注入调试工具和自定义JS
             if (debug) {
-                // vConsole
                 val vConsole = assets.open("vConsole.js").bufferedReader().use { it.readText() }
-                val openDebug = """var vConsole = new window.VConsole()"""
-                view?.evaluateJavascript(vConsole + openDebug, null)
+                view?.evaluateJavascript(vConsole + "var vConsole = new window.VConsole()", null)
             }
-            // inject js
             val injectJs = assets.open("custom.js").bufferedReader().use { it.readText() }
             view?.evaluateJavascript(injectJs, null)
         }
     }
 
+    // WebChrome客户端（处理进度和弹窗）
     inner class MyChromeClient : WebChromeClient() {
         override fun onProgressChanged(view: WebView?, newProgress: Int) {
             super.onProgressChanged(view, newProgress)
-            val url = view?.url
-            println("wev view url:$url")
+            println("网页加载进度: $newProgress%，URL: ${view?.url}")
         }
+    }
+
+    // JS与原生交互接口
+    inner class WebAppInterface {
+        // 供JS调用：打开相机
+        @android.webkit.JavascriptInterface
+        fun openCamera() {
+            runOnUiThread {
+                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) 
+                    == PackageManager.PERMISSION_GRANTED
+                ) {
+                    val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                    takePictureLauncher.launch(intent)
+                } else {
+                    ActivityCompat.requestPermissions(
+                        this@MainActivity,
+                        arrayOf(Manifest.permission.CAMERA),
+                        REQUEST_CAMERA_PERMISSION
+                    )
+                }
+            }
+        }
+
+        // 供JS调用：打开相册
+        @android.webkit.JavascriptInterface
+        fun openGallery() {
+            runOnUiThread {
+                val storagePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    Manifest.permission.READ_MEDIA_IMAGES
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                if (ContextCompat.checkSelfPermission(this@MainActivity, storagePermission) 
+                    == PackageManager.PERMISSION_GRANTED
+                ) {
+                    val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                    pickImageLauncher.launch(intent)
+                } else {
+                    ActivityCompat.requestPermissions(
+                        this@MainActivity,
+                        arrayOf(storagePermission),
+                        REQUEST_STORAGE_PERMISSION
+                    )
+                }
+            }
+        }
+    }
+
+    // 辅助方法：Bitmap转Base64（供WebView显示）
+    private fun bitmapToBase64(bitmap: Bitmap): String {
+        val byteArrayOutputStream = java.io.ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
+        val byteArray = byteArrayOutputStream.toByteArray()
+        return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP)
     }
 }
